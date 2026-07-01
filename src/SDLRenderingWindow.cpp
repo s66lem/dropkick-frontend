@@ -238,16 +238,52 @@ void SDLRenderingWindow::CreateSDLWindow()
     }
 
 #if USE_GLES
-    // use GLES 3.2
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+    // Request the highest GLES context the driver will grant, falling back on failure.
+    // The Raspberry Pi 5 V3D driver caps at GLES 3.1; stronger GPUs keep 3.2.
+    static const int kGlesMinorLadder[] = {2, 1, 0};
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+
+    _renderingWindow = nullptr;
+    _glContext = nullptr;
+    for (int minor : kGlesMinorLadder)
+    {
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, minor);
+
+        if (!_renderingWindow)
+        {
+            _renderingWindow = SDL_CreateWindow("projectM", left, top, width, height,
+                                                SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+            if (!_renderingWindow)
+            {
+                auto errorMessage = "Could not create SDL rendering window. Error: " + std::string(SDL_GetError());
+                poco_fatal(_logger, errorMessage);
+                throw Poco::Exception(errorMessage);
+            }
+        }
+
+        _glContext = SDL_GL_CreateContext(_renderingWindow);
+        if (_glContext)
+        {
+            poco_information_f2(_logger, "Created OpenGL ES 3.%d context.", minor, 0);
+            break;
+        }
+
+        poco_information_f2(_logger, "GLES 3.%d context unavailable (%s); trying lower.",
+                            minor, std::string(SDL_GetError()));
+    }
+
+    if (!_glContext)
+    {
+        auto errorMessage = "Could not create any OpenGL ES rendering context. Error: " + std::string(SDL_GetError());
+        poco_fatal(_logger, errorMessage);
+        throw Poco::Exception(errorMessage);
+    }
 #else
-    // projectM Requires at least Core Profile 3.30 for samplers etc.
+    // projectM requires at least Core Profile 3.30 for samplers etc.
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-#endif
 
     _renderingWindow = SDL_CreateWindow("projectM", left, top, width, height,
                                         SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
@@ -265,6 +301,7 @@ void SDLRenderingWindow::CreateSDLWindow()
         poco_fatal(_logger, errorMessage);
         throw Poco::Exception(errorMessage);
     }
+#endif
 
     SDL_SetWindowTitle(_renderingWindow, "projectM");
     SDL_GL_MakeCurrent(_renderingWindow, _glContext);
