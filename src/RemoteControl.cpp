@@ -52,8 +52,11 @@ void RemoteControl::initialize(Poco::Util::Application& app)
 
     _running = true;
     _serverThread = std::thread([this]() {
-        poco_information_f1(_logger, "Remote control listening on port %hu.", _port);
-        _server->listen("0.0.0.0", _port);
+        poco_information_f1(_logger, "Remote control starting on port %u.", static_cast<unsigned>(_port));
+        if (!_server->listen("0.0.0.0", _port))
+        {
+            poco_error_f1(_logger, "Remote control failed to bind port %u (already in use?).", static_cast<unsigned>(_port));
+        }
     });
 }
 

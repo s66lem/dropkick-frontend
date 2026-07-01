@@ -265,7 +265,7 @@ void SDLRenderingWindow::CreateSDLWindow()
         _glContext = SDL_GL_CreateContext(_renderingWindow);
         if (_glContext)
         {
-            poco_information_f2(_logger, "Created OpenGL ES 3.%d context.", minor, 0);
+            poco_information_f1(_logger, "Created OpenGL ES 3.%d context.", minor);
             break;
         }
 
