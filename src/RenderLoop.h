@@ -2,6 +2,7 @@
 
 #include "AudioCapture.h"
 #include "ProjectMWrapper.h"
+#include "RemoteControl.h"
 #include "SDLRenderingWindow.h"
 
 #include "notifications/QuitNotification.h"
@@ -80,6 +81,7 @@ protected:
     projectm_playlist_handle _playlistHandle{nullptr};
 
     ProjectMGUI& _projectMGui;
+    RemoteControl& _remoteControl;
 
     Poco::NObserver<RenderLoop, QuitNotification> _quitNotificationObserver{*this, &RenderLoop::QuitNotificationHandler}; //!< The observer for quit notifications.
 

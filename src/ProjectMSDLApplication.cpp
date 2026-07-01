@@ -6,6 +6,7 @@
 
 #include "AudioCapture.h"
 #include "ProjectMWrapper.h"
+#include "RemoteControl.h"
 #include "RenderLoop.h"
 #include "SDLRenderingWindow.h"
 #include "gui/ProjectMGUI.h"
@@ -25,6 +26,7 @@ ProjectMSDLApplication::ProjectMSDLApplication()
     addSubsystem(new SDLRenderingWindow);
     addSubsystem(new ProjectMWrapper);
     addSubsystem(new AudioCapture);
+    addSubsystem(new RemoteControl);
     addSubsystem(new ProjectMGUI);
 }
 

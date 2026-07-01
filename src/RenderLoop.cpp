@@ -19,6 +19,7 @@ RenderLoop::RenderLoop()
     , _projectMHandle(_projectMWrapper.ProjectM())
     , _playlistHandle(_projectMWrapper.Playlist())
     , _projectMGui(Poco::Util::Application::instance().getSubsystem<ProjectMGUI>())
+    , _remoteControl(Poco::Util::Application::instance().getSubsystem<RemoteControl>())
     , _userConfig(ProjectMSDLApplication::instance().UserConfiguration())
 {
 }
@@ -39,9 +40,11 @@ void RenderLoop::Run()
         limiter.StartFrame();
 
         PollEvents();
+        _remoteControl.DrainCommands();
         CheckViewportSize();
         _audioCapture.FillBuffer();
         _projectMWrapper.RenderFrame();
+        _remoteControl.PublishStatus(_projectMWrapper.CurrentStatus(), _audioCapture.AudioDeviceName());
         _projectMGui.Draw();
 
         _sdlRenderingWindow.Swap();
