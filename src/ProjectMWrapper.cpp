@@ -213,6 +213,51 @@ void ProjectMWrapper::PresetFileNameToClipboard() const
     projectm_playlist_free_string(presetName);
 }
 
+bool ProjectMWrapper::LoadPresetPack(const std::string& packPath)
+{
+    if (!_playlist)
+    {
+        return false;
+    }
+
+    projectm_playlist_clear(_playlist);
+    uint32_t added = projectm_playlist_add_path(_playlist, packPath.c_str(),
+                                                true /*recurse*/, false /*allow_duplicates*/);
+    if (added > 0)
+    {
+        projectm_playlist_sort(_playlist, 0, projectm_playlist_size(_playlist),
+                               SORT_PREDICATE_FILENAME_ONLY, SORT_ORDER_ASCENDING);
+    }
+
+    poco_information_f2(_logger, "Loaded preset pack '%s' (%?u presets).", packPath, added);
+    return added > 0;
+}
+
+ProjectMWrapper::PlaybackStatus ProjectMWrapper::CurrentStatus() const
+{
+    PlaybackStatus status;
+    if (!_playlist || !_projectM)
+    {
+        return status;
+    }
+
+    status.playlistSize = projectm_playlist_size(_playlist);
+    status.position = projectm_playlist_get_position(_playlist);
+    status.shuffle = projectm_playlist_get_shuffle(_playlist);
+    status.locked = projectm_get_preset_locked(_projectM);
+
+    if (status.playlistSize > 0 && status.position < status.playlistSize)
+    {
+        char* item = projectm_playlist_item(_playlist, status.position);
+        if (item)
+        {
+            status.presetName = item;
+            projectm_playlist_free_string(item);
+        }
+    }
+    return status;
+}
+
 void ProjectMWrapper::PresetSwitchedEvent(bool isHardCut, unsigned int index, void* context)
 {
     auto that = reinterpret_cast<ProjectMWrapper*>(context);

@@ -11,7 +11,9 @@
 #include <Poco/Util/AbstractConfiguration.h>
 #include <Poco/Util/Subsystem.h>
 
+#include <cstdint>
 #include <memory>
+#include <string>
 
 class ProjectMWrapper : public Poco::Util::Subsystem
 {
@@ -79,6 +81,30 @@ public:
      * Copies the full path of the current preset into the OS clipboard.
      */
     void PresetFileNameToClipboard() const;
+
+    /**
+     * @brief Playback status snapshot for the remote control.
+     */
+    struct PlaybackStatus
+    {
+        std::string presetName;
+        uint32_t position{0};
+        uint32_t playlistSize{0};
+        bool shuffle{false};
+        bool locked{false};
+    };
+
+    /**
+     * @brief Clears the playlist and loads all presets under packPath (recursive, sorted).
+     * @param packPath Absolute path to a preset pack directory.
+     * @return True if at least one preset was loaded.
+     */
+    bool LoadPresetPack(const std::string& packPath);
+
+    /**
+     * @brief Returns the current playback status (preset name, position, shuffle, lock).
+     */
+    PlaybackStatus CurrentStatus() const;
 
 private:
     /**
