@@ -92,11 +92,13 @@ void RemoteControl::RegisterRoutes()
 
     _server->set_mount_point("/", _webRoot); // serves index.html, app.js, style.css
 
-    _server->Get("/api/status", [this](const httplib::Request&, httplib::Response& res) {
+    _server->Get("/api/status", [this, guard](const httplib::Request& req, httplib::Response& res) {
+        if (!guard(req, res)) { return; }
         res.set_content(StatusJson(), "application/json");
     });
 
-    _server->Get("/api/packs", [this](const httplib::Request&, httplib::Response& res) {
+    _server->Get("/api/packs", [this, guard](const httplib::Request& req, httplib::Response& res) {
+        if (!guard(req, res)) { return; }
         res.set_content(PacksJson(), "application/json");
     });
 
