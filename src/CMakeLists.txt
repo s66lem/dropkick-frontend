@@ -18,6 +18,8 @@ add_executable(projectMSDL WIN32 MACOSX_BUNDLE
         RenderLoop.h
         SDLRenderingWindow.cpp
         SDLRenderingWindow.h
+        RemoteControl.cpp
+        RemoteControl.h
         main.cpp
         projectMSDL.rc
         )
@@ -89,6 +91,17 @@ target_link_libraries(projectMSDL
         SDL2::SDL2$<$<STREQUAL:${SDL2_LINKAGE},static>:-static>
         SDL2::SDL2main
         OpenGL::$<IF:$<BOOL:${ENABLE_GLES}>,GLES3,GL>
+        )
+
+# Phone remote control: header-only cpp-httplib server (vendored) + threading.
+find_package(Threads REQUIRED)
+target_include_directories(projectMSDL
+        PRIVATE
+        "${CMAKE_SOURCE_DIR}/vendor/httplib"
+        )
+target_link_libraries(projectMSDL
+        PRIVATE
+        Threads::Threads
         )
 
 if (MSVC)
