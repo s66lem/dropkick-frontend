@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -118,6 +119,22 @@ public:
      */
     void LoadPresetFile(const std::string& path) const;
 
+    /**
+     * @brief Quarantines the currently-playing preset (adds it to the blocklist, removes it from the
+     * playlist) and advances to the next one. Used when a preset hangs the GPU.
+     */
+    void QuarantineCurrent();
+
+    /**
+     * @brief Number of presets currently on the GPU-hang blocklist.
+     */
+    uint32_t BlockedCount() const;
+
+    /**
+     * @brief Clears the blocklist and reloads the current preset path so blocked presets return.
+     */
+    void ClearBlocklist();
+
 private:
     /**
      * @brief projectM callback. Called whenever a preset is switched.
@@ -142,6 +159,18 @@ private:
      * @param key The key of the removed property.
      */
     void OnConfigurationPropertyRemoved(const std::string& key);
+
+    // GPU-hang auto-skip: quarantine presets that crash/hang the app. Render thread only.
+    void LoadBlocklist();                          //!< Read blocklist file into memory.
+    void ApplyBlocklist();                         //!< Remove blocklisted entries from the playlist.
+    void AddToBlocklist(const std::string& path);  //!< Add a path to the blocklist (memory + file).
+    void WriteBreadcrumb(const std::string& path); //!< Record the active preset (crash breadcrumb).
+    void ClearBreadcrumb();                        //!< Remove the breadcrumb on clean shutdown.
+    void QuarantineFromCrash();                    //!< If the last run died mid-preset, blocklist it.
+
+    std::set<std::string> _blocklist;   //!< Preset paths that hang/kill the app.
+    std::string _blocklistPath;         //!< ~/.local/share/dropkick/blocklist.txt
+    std::string _breadcrumbPath;        //!< ~/.local/share/dropkick/state/loading
 
     Poco::AutoPtr<Poco::Util::AbstractConfiguration> _userConfig; //!< View of the "projectM" configuration subkey in the "user" configuration.
     Poco::AutoPtr<Poco::Util::AbstractConfiguration> _projectMConfigView; //!< View of the "projectM" configuration subkey in the "effective" configuration.

@@ -32,7 +32,7 @@ public:
     enum class CommandType
     {
         Next, Previous, Random, ToggleShuffle, ToggleLock, NextAudio, LoadPack,
-        SetPosition, SetSetting, CaptureWorkshop
+        SetPosition, SetSetting, CaptureWorkshop, ClearBlocklist
     };
 
     struct Command

@@ -43,11 +43,22 @@ void RenderLoop::Run()
         _remoteControl.DrainCommands();
         CheckViewportSize();
         _audioCapture.FillBuffer();
+
+        // Watchdog: if rendering a preset takes absurdly long, the V3D GPU likely hung on it.
+        // Quarantine it and move on (best-effort — a hard hang kills us and the supervisor
+        // + startup quarantine handle that instead). 4s is well above a legit heavy first frame.
+        Uint32 renderStart = SDL_GetTicks();
         _projectMWrapper.RenderFrame();
         _remoteControl.PublishStatus(_projectMWrapper.CurrentStatus(), _audioCapture.AudioDeviceName());
         _projectMGui.Draw();
 
         _sdlRenderingWindow.Swap();
+
+        if (SDL_GetTicks() - renderStart > 4000)
+        {
+            poco_warning(_logger, "Frame took >4s — quarantining the current preset as a GPU-hang risk.");
+            _projectMWrapper.QuarantineCurrent();
+        }
 
         limiter.EndFrame();
 

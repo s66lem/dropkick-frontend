@@ -8,10 +8,16 @@
 #include <Poco/Delegate.h>
 #include <Poco/File.h>
 #include <Poco/NotificationCenter.h>
+#include <Poco/Path.h>
 
 #include <SDL2/SDL_opengl.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <fstream>
+#include <sys/stat.h>
+#include <vector>
 
 const char* ProjectMWrapper::name() const
 {
@@ -24,6 +30,11 @@ void ProjectMWrapper::initialize(Poco::Util::Application& app)
     _projectMConfigView = projectMSDLApp.config().createView("projectM");
     _userConfig = projectMSDLApp.UserConfiguration();
     poco_information_f1(_logger, "Events enabled: %?d", _projectMConfigView->eventsEnabled());
+
+    _blocklistPath = Poco::Path::expand("~/.local/share/dropkick/blocklist.txt");
+    _breadcrumbPath = Poco::Path::expand("~/.local/share/dropkick/state/loading");
+    LoadBlocklist();
+    QuarantineFromCrash(); // if the previous run died mid-preset, blocklist that preset
 
     if (!_projectM)
     {
@@ -103,6 +114,7 @@ void ProjectMWrapper::initialize(Poco::Util::Application& app)
             }
         }
         projectm_playlist_sort(_playlist, 0, projectm_playlist_size(_playlist), SORT_PREDICATE_FILENAME_ONLY, SORT_ORDER_ASCENDING);
+        ApplyBlocklist(); // drop presets known to hang/kill the app
 
         projectm_playlist_set_preset_switched_event_callback(_playlist, &ProjectMWrapper::PresetSwitchedEvent, static_cast<void*>(this));
     }
@@ -119,6 +131,8 @@ void ProjectMWrapper::uninitialize()
     _userConfig->propertyRemoved -= Poco::delegate(this, &ProjectMWrapper::OnConfigurationPropertyRemoved);
     _userConfig->propertyChanged -= Poco::delegate(this, &ProjectMWrapper::OnConfigurationPropertyChanged);
     Poco::NotificationCenter::defaultCenter().removeObserver(_playbackControlNotificationObserver);
+
+    ClearBreadcrumb(); // clean shutdown — the current preset didn't crash us
 
     if (_projectM)
     {
@@ -292,12 +306,114 @@ void ProjectMWrapper::LoadPresetFile(const std::string& path) const
     }
 }
 
+void ProjectMWrapper::LoadBlocklist()
+{
+    _blocklist.clear();
+    std::ifstream in(_blocklistPath);
+    std::string line;
+    while (std::getline(in, line))
+    {
+        if (!line.empty() && line.back() == '\r') { line.pop_back(); }
+        if (!line.empty()) { _blocklist.insert(line); }
+    }
+}
+
+void ProjectMWrapper::AddToBlocklist(const std::string& path)
+{
+    if (path.empty() || _blocklist.count(path)) { return; }
+    _blocklist.insert(path);
+    std::ofstream out(_blocklistPath, std::ios::app);
+    if (out) { out << path << "\n"; }
+    poco_information_f1(_logger, "Quarantined preset (GPU-hang blocklist): %s", path);
+}
+
+void ProjectMWrapper::ApplyBlocklist()
+{
+    if (!_playlist || _blocklist.empty()) { return; }
+    uint32_t size = projectm_playlist_size(_playlist);
+    uint32_t removed = 0;
+    for (uint32_t i = size; i-- > 0;) // high->low so indices stay valid while removing
+    {
+        char* item = projectm_playlist_item(_playlist, i);
+        if (item)
+        {
+            if (_blocklist.count(item)) { projectm_playlist_remove_preset(_playlist, i); ++removed; }
+            projectm_playlist_free_string(item);
+        }
+    }
+    if (removed)
+    {
+        poco_information_f2(_logger, "Blocklist: removed %?u presets (%?u blocked).",
+                            removed, static_cast<uint32_t>(_blocklist.size()));
+    }
+}
+
+void ProjectMWrapper::WriteBreadcrumb(const std::string& path)
+{
+    if (path.empty()) { return; }
+    Poco::Path p(_breadcrumbPath);
+    ::mkdir(p.parent().toString().c_str(), 0755); // ensure state dir exists (no-op if present)
+    std::ofstream out(_breadcrumbPath, std::ios::trunc);
+    if (out) { out << path; }
+}
+
+void ProjectMWrapper::ClearBreadcrumb()
+{
+    std::remove(_breadcrumbPath.c_str());
+}
+
+void ProjectMWrapper::QuarantineFromCrash()
+{
+    std::ifstream in(_breadcrumbPath);
+    if (!in) { return; }
+    std::string path((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    while (!path.empty() && (path.back() == '\n' || path.back() == '\r')) { path.pop_back(); }
+    if (!path.empty())
+    {
+        poco_information_f1(_logger, "Previous run died on a preset — quarantining: %s", path);
+        AddToBlocklist(path);
+    }
+    std::remove(_breadcrumbPath.c_str());
+}
+
+void ProjectMWrapper::QuarantineCurrent()
+{
+    if (!_playlist) { return; }
+    uint32_t pos = projectm_playlist_get_position(_playlist);
+    char* item = projectm_playlist_item(_playlist, pos);
+    std::string path = item ? item : "";
+    if (item) { projectm_playlist_free_string(item); }
+
+    AddToBlocklist(path);
+    ClearBreadcrumb();
+    projectm_playlist_play_next(_playlist, true); // move off the bad preset first
+    ApplyBlocklist();                             // then drop it (and any others) from the playlist
+}
+
+uint32_t ProjectMWrapper::BlockedCount() const
+{
+    return static_cast<uint32_t>(_blocklist.size());
+}
+
+void ProjectMWrapper::ClearBlocklist()
+{
+    _blocklist.clear();
+    std::remove(_blocklistPath.c_str());
+    poco_information(_logger, "Blocklist cleared (cleared presets return on next pack load/restart).");
+}
+
 void ProjectMWrapper::PresetSwitchedEvent(bool isHardCut, unsigned int index, void* context)
 {
     auto that = reinterpret_cast<ProjectMWrapper*>(context);
     auto presetName = projectm_playlist_item(that->_playlist, index);
-    poco_information_f1(that->_logger, "Displaying preset: %s", std::string(presetName));
+    std::string path = presetName ? presetName : "";
+    poco_information_f1(that->_logger, "Displaying preset: %s", path);
     projectm_playlist_free_string(presetName);
+
+    // Crash breadcrumb: record the now-active preset so a GPU hang that kills us
+    // can be quarantined on the next (supervisor) restart.
+    that->WriteBreadcrumb(path);
 
     Poco::NotificationCenter::defaultCenter().postNotification(new UpdateWindowTitleNotification);
 }

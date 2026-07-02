@@ -233,6 +233,12 @@ void RemoteControl::RegisterRoutes()
         res.set_content("{\"ok\":true}", "application/json");
     });
 
+    _server->Post("/api/blocklist/clear", [this, guard](const httplib::Request& req, httplib::Response& res) {
+        if (!guard(req, res)) { return; }
+        Enqueue(Command{CommandType::ClearBlocklist, "", ""});
+        res.set_content("{\"ok\":true}", "application/json");
+    });
+
     post("/api/next", CommandType::Next);
     post("/api/prev", CommandType::Previous);
     post("/api/random", CommandType::Random);
@@ -331,6 +337,9 @@ void RemoteControl::DrainCommands()
                 break;
             case CommandType::CaptureWorkshop:
                 CaptureToWorkshop();
+                break;
+            case CommandType::ClearBlocklist:
+                app.getSubsystem<ProjectMWrapper>().ClearBlocklist();
                 break;
         }
     }
@@ -523,6 +532,7 @@ void RemoteControl::PublishStatus(const ProjectMWrapper::PlaybackStatus& status,
          << "\"favorited\":" << (favorited ? "true" : "false") << ","
          << "\"favoritesShuffle\":" << (_favShuffle.load() ? "true" : "false") << ","
          << "\"workshop\":" << (_workshopActive ? "true" : "false") << ","
+         << "\"blocked\":" << ProjectMSDLApplication::instance().getSubsystem<ProjectMWrapper>().BlockedCount() << ","
          << "\"audio\":\"" << JsonEscape(audioDevice) << "\""
          << "}";
 
