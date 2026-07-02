@@ -208,7 +208,8 @@ void RemoteControl::RegisterRoutes()
         std::string value = req.get_param_value("value");
         static const std::set<std::string> kKeys{
             "presetDuration", "softCutDuration", "hardCut", "hardCutDuration",
-            "hardCutSensitivity", "beatSensitivity", "fps", "aspectCorrection"};
+            "hardCutSensitivity", "beatSensitivity", "fps", "aspectCorrection",
+            "reduceFlashing", "flashStrength"};
         if (!kKeys.count(key) || value.empty())
         {
             res.status = 400;
@@ -424,6 +425,9 @@ void RemoteControl::ApplySetting(const std::string& key, const std::string& valu
         // The frontend's FPS limiter reads projectM.fps from the user config.
         app.UserConfiguration()->setInt("projectM.fps", static_cast<int>(v));
     }
+    // Strobe damper settings are frontend-side (read by RenderLoop from the user config).
+    else if (key == "reduceFlashing") { app.UserConfiguration()->setBool("projectM.reduceFlashing", on); }
+    else if (key == "flashStrength") { app.UserConfiguration()->setDouble("projectM.flashStrength", v); }
 }
 
 void RemoteControl::PollWorkshop()
@@ -549,7 +553,9 @@ void RemoteControl::PublishStatus(const ProjectMWrapper::PlaybackStatus& status,
                  << "\"hardCutSensitivity\":" << projectm_get_hard_cut_sensitivity(pm) << ","
                  << "\"beatSensitivity\":" << projectm_get_beat_sensitivity(pm) << ","
                  << "\"fps\":" << projectm_get_fps(pm) << ","
-                 << "\"aspectCorrection\":" << (projectm_get_aspect_correction(pm) ? "true" : "false")
+                 << "\"aspectCorrection\":" << (projectm_get_aspect_correction(pm) ? "true" : "false") << ","
+                 << "\"reduceFlashing\":" << (ProjectMSDLApplication::instance().config().getBool("projectM.reduceFlashing", false) ? "true" : "false") << ","
+                 << "\"flashStrength\":" << ProjectMSDLApplication::instance().config().getDouble("projectM.flashStrength", 0.6)
                  << "}";
     }
     else

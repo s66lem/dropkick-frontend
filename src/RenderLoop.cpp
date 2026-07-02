@@ -47,8 +47,20 @@ void RenderLoop::Run()
         // Watchdog: if rendering a preset takes absurdly long, the V3D GPU likely hung on it.
         // Quarantine it and move on (best-effort — a hard hang kills us and the supervisor
         // + startup quarantine handle that instead). 4s is well above a legit heavy first frame.
+        _strobe.SetEnabled(_userConfig->getBool("reduceFlashing", false));
+        _strobe.SetStrength(static_cast<float>(_userConfig->getDouble("flashStrength", 0.6)));
+
         Uint32 renderStart = SDL_GetTicks();
-        _projectMWrapper.RenderFrame();
+        if (_strobe.Enabled())
+        {
+            _strobe.Begin(_renderWidth, _renderHeight);
+            _projectMWrapper.RenderFrame(_strobe.SceneFbo()); // SceneFbo()==0 if setup failed -> backbuffer
+            _strobe.Composite();
+        }
+        else
+        {
+            _projectMWrapper.RenderFrame();
+        }
         _remoteControl.PublishStatus(_projectMWrapper.CurrentStatus(), _audioCapture.AudioDeviceName());
         _projectMGui.Draw();
 

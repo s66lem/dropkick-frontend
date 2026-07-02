@@ -41,7 +41,7 @@ public:
     /**
      * Renders a single projectM frame.
      */
-    void RenderFrame() const;
+    void RenderFrame(uint32_t targetFbo = 0) const;
 
     /**
      * @brief Returns the targeted FPS value.

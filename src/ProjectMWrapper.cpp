@@ -167,7 +167,7 @@ void ProjectMWrapper::UpdateRealFPS(float fps)
     projectm_set_fps(_projectM, static_cast<uint32_t>(std::round(fps)));
 }
 
-void ProjectMWrapper::RenderFrame() const
+void ProjectMWrapper::RenderFrame(uint32_t targetFbo) const
 {
     glClearColor(0.0, 0.0, 0.0, 0.0);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -181,7 +181,14 @@ void ProjectMWrapper::RenderFrame() const
         projectm_set_mesh_size(_projectM, _projectMConfigView->getInt("meshX", 220), _projectMConfigView->getInt("meshY", 125));
     }
 
-    projectm_opengl_render_frame(_projectM);
+    if (targetFbo != 0)
+    {
+        projectm_opengl_render_frame_fbo(_projectM, targetFbo);
+    }
+    else
+    {
+        projectm_opengl_render_frame(_projectM);
+    }
 }
 
 void ProjectMWrapper::DisplayInitialPreset()

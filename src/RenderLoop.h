@@ -4,6 +4,7 @@
 #include "ProjectMWrapper.h"
 #include "RemoteControl.h"
 #include "SDLRenderingWindow.h"
+#include "StrobeFilter.h"
 
 #include "notifications/QuitNotification.h"
 
@@ -95,6 +96,8 @@ protected:
     ModifierKeyStates _keyStates; //!< Current "pressed" states of modifier keys
 
     Poco::AutoPtr<Poco::Util::AbstractConfiguration> _userConfig; //!< View of the "projectM" configuration subkey in the "user" configuration.
+
+    StrobeFilter _strobe; //!< Optional "reduce flashing" post-process (off unless enabled in settings).
 
     Poco::Logger& _logger{Poco::Logger::get("RenderLoop")}; //!< The class logger.
 };
