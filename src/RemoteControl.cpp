@@ -240,6 +240,70 @@ void RemoteControl::RegisterRoutes()
         res.set_content("{\"ok\":true}", "application/json");
     });
 
+    // In-remote preset editor.
+    _server->Get("/api/workshop/source", [this, guard](const httplib::Request& req, httplib::Response& res) {
+        if (!guard(req, res)) { return; }
+        std::string path;
+        {
+            std::lock_guard<std::mutex> lock(_statusMutex);
+            path = _editPath;
+        }
+        std::string text;
+        std::ifstream in(path, std::ios::binary);
+        if (in)
+        {
+            std::stringstream buf;
+            buf << in.rdbuf();
+            text = buf.str();
+        }
+        std::ostringstream json;
+        json << "{\"path\":\"" << JsonEscape(path) << "\",\"text\":\"" << JsonEscape(text) << "\"}";
+        res.set_content(json.str(), "application/json");
+    });
+
+    _server->Post("/api/workshop/apply", [this, guard](const httplib::Request& req, httplib::Response& res) {
+        if (!guard(req, res)) { return; }
+        std::string scratch = _workshopDir + "/_scratch.milk";
+        ::mkdir(_workshopDir.c_str(), 0755);
+        std::ofstream out(scratch, std::ios::trunc | std::ios::binary);
+        if (!out)
+        {
+            res.status = 500;
+            res.set_content("{\"error\":\"cannot write scratch\"}", "application/json");
+            return;
+        }
+        out << req.body;
+        out.close();
+        Enqueue(Command{CommandType::LoadWorkshopPath, scratch, ""});
+        res.set_content("{\"ok\":true}", "application/json");
+    });
+
+    _server->Post("/api/workshop/save", [this, guard](const httplib::Request& req, httplib::Response& res) {
+        if (!guard(req, res)) { return; }
+        std::string name = req.get_param_value("name");
+        // sanitize: strip any directory parts and enforce .milk
+        auto slash = name.find_last_of("/\\");
+        if (slash != std::string::npos) { name = name.substr(slash + 1); }
+        if (name.empty() || name.find("..") != std::string::npos)
+        {
+            res.status = 400;
+            res.set_content("{\"error\":\"invalid name\"}", "application/json");
+            return;
+        }
+        if (name.size() < 5 || name.compare(name.size() - 5, 5, ".milk") != 0) { name += ".milk"; }
+        std::string dest = _workshopDir + "/" + name;
+        ::mkdir(_workshopDir.c_str(), 0755);
+        std::ofstream out(dest, std::ios::trunc | std::ios::binary);
+        if (!out)
+        {
+            res.status = 500;
+            res.set_content("{\"error\":\"cannot save\"}", "application/json");
+            return;
+        }
+        out << req.body;
+        res.set_content(std::string("{\"ok\":true,\"file\":\"") + JsonEscape(name) + "\"}", "application/json");
+    });
+
     post("/api/next", CommandType::Next);
     post("/api/prev", CommandType::Previous);
     post("/api/random", CommandType::Random);
@@ -341,6 +405,11 @@ void RemoteControl::DrainCommands()
                 break;
             case CommandType::ClearBlocklist:
                 app.getSubsystem<ProjectMWrapper>().ClearBlocklist();
+                break;
+            case CommandType::LoadWorkshopPath:
+                app.getSubsystem<ProjectMWrapper>().LoadPresetFile(command.arg);
+                _workshopActive = true;
+                _workshopPath = command.arg;
                 break;
         }
     }
@@ -566,6 +635,7 @@ void RemoteControl::PublishStatus(const ProjectMWrapper::PlaybackStatus& status,
     std::lock_guard<std::mutex> lock(_statusMutex);
     _statusJson = json.str();
     _settingsJson = settings.str();
+    _editPath = _workshopActive ? _workshopPath : _currentPath;
 }
 
 std::string RemoteControl::StatusJson() const

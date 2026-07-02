@@ -32,7 +32,7 @@ public:
     enum class CommandType
     {
         Next, Previous, Random, ToggleShuffle, ToggleLock, NextAudio, LoadPack,
-        SetPosition, SetSetting, CaptureWorkshop, ClearBlocklist
+        SetPosition, SetSetting, CaptureWorkshop, ClearBlocklist, LoadWorkshopPath
     };
 
     struct Command
@@ -82,6 +82,7 @@ private:
     mutable std::mutex _statusMutex;
     std::string _statusJson{"{}"};
     std::string _settingsJson{"{}"};
+    std::string _editPath; //!< Path of the preset the in-remote editor should load (guarded by _statusMutex).
 
     mutable std::mutex _dataMutex;
     std::string _presetsJson{"[]"};
