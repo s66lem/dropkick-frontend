@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 class ProjectMWrapper : public Poco::Util::Subsystem
 {
@@ -105,6 +106,11 @@ public:
      * @brief Returns the current playback status (preset name, position, shuffle, lock).
      */
     PlaybackStatus CurrentStatus() const;
+
+    /**
+     * @brief Returns the full playlist as a vector of preset file paths.
+     */
+    std::vector<std::string> PlaylistItems() const;
 
 private:
     /**

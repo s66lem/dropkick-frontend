@@ -10,9 +10,16 @@
 #include <Poco/Path.h>
 #include <Poco/Util/Application.h>
 
+#include <projectM-4/projectM.h>
+#include <projectM-4/playlist.h>
+
+#include <algorithm>
+#include <cstdlib>
 #include <dirent.h>
+#include <fstream>
 #include <sstream>
 #include <sys/stat.h>
+#include <vector>
 
 namespace
 {
@@ -23,7 +30,41 @@ std::string JsonEscape(const std::string& in)
     {
         if (c == '"' || c == '\\') { out += '\\'; out += c; }
         else if (c == '\n') { out += "\\n"; }
+        else if (c == '\r') { out += "\\r"; }
+        else if (c == '\t') { out += "\\t"; }
+        else if (static_cast<unsigned char>(c) < 0x20) { /* drop other control bytes */ }
         else { out += c; }
+    }
+    return out;
+}
+
+/**
+ * Minimal parser for a JSON array of strings as written by SaveFavorites().
+ * Scans for double-quoted strings, honoring backslash escapes.
+ */
+std::vector<std::string> ParseStringArray(const std::string& text)
+{
+    std::vector<std::string> out;
+    std::string cur;
+    bool inString = false;
+    for (size_t i = 0; i < text.size(); ++i)
+    {
+        char c = text[i];
+        if (!inString)
+        {
+            if (c == '"') { inString = true; cur.clear(); }
+            continue;
+        }
+        if (c == '\\' && i + 1 < text.size())
+        {
+            char n = text[++i];
+            if (n == 'n') { cur += '\n'; }
+            else if (n == 'r') { cur += '\r'; }
+            else if (n == 't') { cur += '\t'; }
+            else { cur += n; }
+        }
+        else if (c == '"') { inString = false; out.push_back(cur); }
+        else { cur += c; }
     }
     return out;
 }
@@ -46,6 +87,10 @@ void RemoteControl::initialize(Poco::Util::Application& app)
                      Poco::Path::expand("~/.local/share/dropkick/presets"));
     _webRoot = config->getString("webRoot",
                      Poco::Path::expand("~/.local/share/dropkick/remote"));
+    _favoritesFile = config->getString("favoritesFile",
+                     Poco::Path::expand("~/.local/share/dropkick/favorites.json"));
+
+    LoadFavorites();
 
     _server = std::make_unique<httplib::Server>();
     RegisterRoutes();
@@ -105,10 +150,75 @@ void RemoteControl::RegisterRoutes()
         res.set_content(PacksJson(), "application/json");
     });
 
+    _server->Get("/api/presets", [this, guard](const httplib::Request& req, httplib::Response& res) {
+        if (!guard(req, res)) { return; }
+        res.set_content(PresetsJson(), "application/json");
+    });
+
+    _server->Get("/api/settings", [this, guard](const httplib::Request& req, httplib::Response& res) {
+        if (!guard(req, res)) { return; }
+        res.set_content(SettingsJson(), "application/json");
+    });
+
+    _server->Get("/api/favorites", [this, guard](const httplib::Request& req, httplib::Response& res) {
+        if (!guard(req, res)) { return; }
+        res.set_content(FavoritesJson(), "application/json");
+    });
+
+    _server->Post("/api/favorites/toggle", [this, guard](const httplib::Request& req, httplib::Response& res) {
+        if (!guard(req, res)) { return; }
+        std::string path = req.get_param_value("path");
+        if (path.empty())
+        {
+            res.status = 400;
+            res.set_content("{\"error\":\"missing path\"}", "application/json");
+            return;
+        }
+        bool nowFavorite = ToggleFavorite(path);
+        res.set_content(std::string("{\"ok\":true,\"favorited\":") + (nowFavorite ? "true" : "false") + "}", "application/json");
+    });
+
+    _server->Post("/api/favorites/shuffle", [this, guard](const httplib::Request& req, httplib::Response& res) {
+        if (!guard(req, res)) { return; }
+        bool on = !_favShuffle.load();
+        _favShuffle = on;
+        res.set_content(std::string("{\"ok\":true,\"favoritesShuffle\":") + (on ? "true" : "false") + "}", "application/json");
+    });
+
+    _server->Post("/api/preset", [this, guard](const httplib::Request& req, httplib::Response& res) {
+        if (!guard(req, res)) { return; }
+        std::string index = req.get_param_value("index");
+        if (index.empty() || index.find_first_not_of("0123456789") != std::string::npos)
+        {
+            res.status = 400;
+            res.set_content("{\"error\":\"invalid index\"}", "application/json");
+            return;
+        }
+        Enqueue(Command{CommandType::SetPosition, index, ""});
+        res.set_content("{\"ok\":true}", "application/json");
+    });
+
+    _server->Post("/api/settings", [this, guard](const httplib::Request& req, httplib::Response& res) {
+        if (!guard(req, res)) { return; }
+        std::string key = req.get_param_value("key");
+        std::string value = req.get_param_value("value");
+        static const std::set<std::string> kKeys{
+            "presetDuration", "softCutDuration", "hardCut", "hardCutDuration",
+            "hardCutSensitivity", "beatSensitivity", "fps", "aspectCorrection"};
+        if (!kKeys.count(key) || value.empty())
+        {
+            res.status = 400;
+            res.set_content("{\"error\":\"invalid setting\"}", "application/json");
+            return;
+        }
+        Enqueue(Command{CommandType::SetSetting, key, value});
+        res.set_content("{\"ok\":true}", "application/json");
+    });
+
     auto post = [this, guard](const char* path, CommandType type) {
         _server->Post(path, [this, guard, type](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) { return; }
-            Enqueue(Command{type, ""});
+            Enqueue(Command{type, "", ""});
             res.set_content("{\"ok\":true}", "application/json");
         });
     };
@@ -129,13 +239,18 @@ void RemoteControl::RegisterRoutes()
             res.set_content("{\"error\":\"invalid pack name\"}", "application/json");
             return;
         }
-        Enqueue(Command{CommandType::LoadPack, pack});
+        Enqueue(Command{CommandType::LoadPack, pack, ""});
         res.set_content("{\"ok\":true}", "application/json");
     });
 }
 
 void RemoteControl::DrainCommands()
 {
+    if (_presetsDirty.exchange(false))
+    {
+        RebuildPresetCache();
+    }
+
     std::deque<Command> pending;
     {
         std::lock_guard<std::mutex> lock(_queueMutex);
@@ -150,13 +265,21 @@ void RemoteControl::DrainCommands()
         switch (command.type)
         {
             case CommandType::Next:
-                center.postNotification(new PlaybackControlNotification(PlaybackControlNotification::Action::NextPreset));
+                if (_favShuffle.load()) { JumpToFavorite(true); }
+                else
+                {
+                    center.postNotification(new PlaybackControlNotification(PlaybackControlNotification::Action::NextPreset));
+                }
                 break;
             case CommandType::Previous:
                 center.postNotification(new PlaybackControlNotification(PlaybackControlNotification::Action::PreviousPreset));
                 break;
             case CommandType::Random:
-                center.postNotification(new PlaybackControlNotification(PlaybackControlNotification::Action::RandomPreset));
+                if (_favShuffle.load()) { JumpToFavorite(false); }
+                else
+                {
+                    center.postNotification(new PlaybackControlNotification(PlaybackControlNotification::Action::RandomPreset));
+                }
                 break;
             case CommandType::ToggleShuffle:
                 center.postNotification(new PlaybackControlNotification(PlaybackControlNotification::Action::ToggleShuffle));
@@ -171,14 +294,118 @@ void RemoteControl::DrainCommands()
             {
                 std::string path = _presetRoot + "/" + command.arg;
                 app.getSubsystem<ProjectMWrapper>().LoadPresetPack(path);
+                _presetsDirty = true;
                 break;
             }
+            case CommandType::SetPosition:
+            {
+                auto playlist = app.getSubsystem<ProjectMWrapper>().Playlist();
+                if (playlist)
+                {
+                    uint32_t index = static_cast<uint32_t>(std::strtoul(command.arg.c_str(), nullptr, 10));
+                    if (index < projectm_playlist_size(playlist))
+                    {
+                        projectm_playlist_set_position(playlist, index, true);
+                    }
+                }
+                break;
+            }
+            case CommandType::SetSetting:
+                ApplySetting(command.arg, command.arg2);
+                break;
         }
+    }
+}
+
+void RemoteControl::RebuildPresetCache()
+{
+    auto& wrapper = ProjectMSDLApplication::instance().getSubsystem<ProjectMWrapper>();
+    auto items = wrapper.PlaylistItems();
+
+    _pathToIndex.clear();
+    std::ostringstream json;
+    json << "[";
+    for (uint32_t i = 0; i < items.size(); ++i)
+    {
+        _pathToIndex[items[i]] = i;
+        if (i) { json << ","; }
+        json << "{\"i\":" << i << ",\"p\":\"" << JsonEscape(items[i]) << "\"}";
+    }
+    json << "]";
+
+    {
+        std::lock_guard<std::mutex> lock(_dataMutex);
+        _presetsJson = json.str();
+    }
+    poco_information_f1(_logger, "Preset cache rebuilt (%z items).", items.size());
+}
+
+void RemoteControl::JumpToFavorite(bool nextInOrder)
+{
+    auto playlist = ProjectMSDLApplication::instance().getSubsystem<ProjectMWrapper>().Playlist();
+    if (!playlist) { return; }
+
+    std::vector<uint32_t> favoriteIndices;
+    {
+        std::lock_guard<std::mutex> lock(_favMutex);
+        for (const auto& path : _favorites)
+        {
+            auto it = _pathToIndex.find(path);
+            if (it != _pathToIndex.end()) { favoriteIndices.push_back(it->second); }
+        }
+    }
+    if (favoriteIndices.empty()) { return; }
+    std::sort(favoriteIndices.begin(), favoriteIndices.end());
+
+    uint32_t target;
+    if (nextInOrder)
+    {
+        uint32_t current = projectm_playlist_get_position(playlist);
+        target = favoriteIndices.front();
+        for (uint32_t idx : favoriteIndices)
+        {
+            if (idx > current) { target = idx; break; }
+        }
+    }
+    else
+    {
+        target = favoriteIndices[static_cast<size_t>(std::rand()) % favoriteIndices.size()];
+    }
+    projectm_playlist_set_position(playlist, target, true);
+}
+
+void RemoteControl::ApplySetting(const std::string& key, const std::string& value)
+{
+    auto& app = ProjectMSDLApplication::instance();
+    auto pm = app.getSubsystem<ProjectMWrapper>().ProjectM();
+    if (!pm) { return; }
+
+    double v = std::atof(value.c_str());
+    bool on = (value == "true" || v != 0.0);
+
+    if (key == "presetDuration") { projectm_set_preset_duration(pm, v); }
+    else if (key == "softCutDuration") { projectm_set_soft_cut_duration(pm, v); }
+    else if (key == "hardCut") { projectm_set_hard_cut_enabled(pm, on); }
+    else if (key == "hardCutDuration") { projectm_set_hard_cut_duration(pm, v); }
+    else if (key == "hardCutSensitivity") { projectm_set_hard_cut_sensitivity(pm, static_cast<float>(v)); }
+    else if (key == "beatSensitivity") { projectm_set_beat_sensitivity(pm, static_cast<float>(v)); }
+    else if (key == "aspectCorrection") { projectm_set_aspect_correction(pm, on); }
+    else if (key == "fps")
+    {
+        projectm_set_fps(pm, static_cast<int32_t>(v));
+        // The frontend's FPS limiter reads projectM.fps from the user config.
+        app.UserConfiguration()->setInt("projectM.fps", static_cast<int>(v));
     }
 }
 
 void RemoteControl::PublishStatus(const ProjectMWrapper::PlaybackStatus& status, const std::string& audioDevice)
 {
+    bool favorited;
+    {
+        std::lock_guard<std::mutex> lock(_favMutex);
+        favorited = _favorites.count(status.presetName) > 0;
+    }
+
     std::ostringstream json;
     json << "{"
          << "\"preset\":\"" << JsonEscape(status.presetName) << "\","
@@ -186,16 +413,105 @@ void RemoteControl::PublishStatus(const ProjectMWrapper::PlaybackStatus& status,
          << "\"size\":" << status.playlistSize << ","
          << "\"shuffle\":" << (status.shuffle ? "true" : "false") << ","
          << "\"locked\":" << (status.locked ? "true" : "false") << ","
+         << "\"favorited\":" << (favorited ? "true" : "false") << ","
+         << "\"favoritesShuffle\":" << (_favShuffle.load() ? "true" : "false") << ","
          << "\"audio\":\"" << JsonEscape(audioDevice) << "\""
          << "}";
+
+    // Settings snapshot (render thread — safe to query projectM here).
+    std::ostringstream settings;
+    auto pm = ProjectMSDLApplication::instance().getSubsystem<ProjectMWrapper>().ProjectM();
+    if (pm)
+    {
+        settings << "{"
+                 << "\"presetDuration\":" << projectm_get_preset_duration(pm) << ","
+                 << "\"softCutDuration\":" << projectm_get_soft_cut_duration(pm) << ","
+                 << "\"hardCut\":" << (projectm_get_hard_cut_enabled(pm) ? "true" : "false") << ","
+                 << "\"hardCutDuration\":" << projectm_get_hard_cut_duration(pm) << ","
+                 << "\"hardCutSensitivity\":" << projectm_get_hard_cut_sensitivity(pm) << ","
+                 << "\"beatSensitivity\":" << projectm_get_beat_sensitivity(pm) << ","
+                 << "\"fps\":" << projectm_get_fps(pm) << ","
+                 << "\"aspectCorrection\":" << (projectm_get_aspect_correction(pm) ? "true" : "false")
+                 << "}";
+    }
+    else
+    {
+        settings << "{}";
+    }
+
     std::lock_guard<std::mutex> lock(_statusMutex);
     _statusJson = json.str();
+    _settingsJson = settings.str();
 }
 
 std::string RemoteControl::StatusJson() const
 {
     std::lock_guard<std::mutex> lock(_statusMutex);
     return _statusJson;
+}
+
+std::string RemoteControl::SettingsJson() const
+{
+    std::lock_guard<std::mutex> lock(_statusMutex);
+    return _settingsJson;
+}
+
+std::string RemoteControl::PresetsJson() const
+{
+    std::lock_guard<std::mutex> lock(_dataMutex);
+    return _presetsJson;
+}
+
+std::string RemoteControl::FavoritesJson() const
+{
+    std::ostringstream json;
+    json << "[";
+    std::lock_guard<std::mutex> lock(_favMutex);
+    bool first = true;
+    for (const auto& path : _favorites)
+    {
+        if (!first) { json << ","; }
+        json << "\"" << JsonEscape(path) << "\"";
+        first = false;
+    }
+    json << "]";
+    return json.str();
+}
+
+bool RemoteControl::ToggleFavorite(const std::string& path)
+{
+    bool nowFavorite;
+    {
+        std::lock_guard<std::mutex> lock(_favMutex);
+        auto it = _favorites.find(path);
+        if (it != _favorites.end()) { _favorites.erase(it); nowFavorite = false; }
+        else { _favorites.insert(path); nowFavorite = true; }
+    }
+    SaveFavorites();
+    return nowFavorite;
+}
+
+void RemoteControl::LoadFavorites()
+{
+    std::ifstream in(_favoritesFile);
+    if (!in) { return; }
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    auto paths = ParseStringArray(buffer.str());
+    std::lock_guard<std::mutex> lock(_favMutex);
+    _favorites.insert(paths.begin(), paths.end());
+}
+
+void RemoteControl::SaveFavorites()
+{
+    std::string json = FavoritesJson();
+    std::ofstream out(_favoritesFile, std::ios::trunc);
+    if (!out)
+    {
+        poco_error_f1(_logger, "Could not write favorites file %s.", _favoritesFile);
+        return;
+    }
+    out << json;
 }
 
 std::string RemoteControl::PacksJson() const

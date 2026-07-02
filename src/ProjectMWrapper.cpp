@@ -258,6 +258,32 @@ ProjectMWrapper::PlaybackStatus ProjectMWrapper::CurrentStatus() const
     return status;
 }
 
+std::vector<std::string> ProjectMWrapper::PlaylistItems() const
+{
+    std::vector<std::string> items;
+    if (!_playlist)
+    {
+        return items;
+    }
+
+    uint32_t size = projectm_playlist_size(_playlist);
+    if (size == 0)
+    {
+        return items;
+    }
+
+    char** array = projectm_playlist_items(_playlist, 0, size);
+    if (array)
+    {
+        for (uint32_t i = 0; array[i] != nullptr; ++i)
+        {
+            items.emplace_back(array[i]);
+        }
+        projectm_playlist_free_string_array(array);
+    }
+    return items;
+}
+
 void ProjectMWrapper::PresetSwitchedEvent(bool isHardCut, unsigned int index, void* context)
 {
     auto that = reinterpret_cast<ProjectMWrapper*>(context);
