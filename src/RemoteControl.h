@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -31,7 +32,7 @@ public:
     enum class CommandType
     {
         Next, Previous, Random, ToggleShuffle, ToggleLock, NextAudio, LoadPack,
-        SetPosition, SetSetting
+        SetPosition, SetSetting, CaptureWorkshop
     };
 
     struct Command
@@ -69,6 +70,8 @@ private:
     void RebuildPresetCache();       //!< Render thread only.
     void ApplySetting(const std::string& key, const std::string& value); //!< Render thread only.
     void JumpToFavorite(bool nextInOrder); //!< Render thread only.
+    void PollWorkshop();             //!< Render thread only — hot-reloads changed workshop presets.
+    void CaptureToWorkshop();        //!< Render thread only — copies current preset into the workshop dir.
 
     std::unique_ptr<httplib::Server> _server;
     std::thread _serverThread;
@@ -90,6 +93,15 @@ private:
     std::unordered_map<std::string, uint32_t> _pathToIndex; //!< Render thread only.
     std::atomic<bool> _presetsDirty{true};
     std::atomic<bool> _favShuffle{false};
+
+    // Workshop (preset authoring) — all render-thread only.
+    std::string _workshopDir;
+    std::map<std::string, long> _workshopSeen; //!< file path -> last-seen mtime
+    bool _workshopSeeded{false};
+    long _lastWorkshopPoll{0};
+    bool _workshopActive{false};    //!< true while a workshop file is the live preset
+    std::string _workshopPath;      //!< path of the live workshop preset
+    std::string _currentPath;       //!< last playlist preset path seen in PublishStatus
 
     std::string _token;
     std::string _presetRoot;

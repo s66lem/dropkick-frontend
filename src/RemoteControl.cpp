@@ -15,10 +15,12 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <ctime>
 #include <dirent.h>
 #include <fstream>
 #include <sstream>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <vector>
 
 namespace
@@ -89,6 +91,8 @@ void RemoteControl::initialize(Poco::Util::Application& app)
                      Poco::Path::expand("~/.local/share/dropkick/remote"));
     _favoritesFile = config->getString("favoritesFile",
                      Poco::Path::expand("~/.local/share/dropkick/favorites.json"));
+    _workshopDir = config->getString("workshopDir",
+                     Poco::Path::expand("~/.local/share/dropkick/workshop"));
 
     LoadFavorites();
 
@@ -223,6 +227,12 @@ void RemoteControl::RegisterRoutes()
         });
     };
 
+    _server->Post("/api/workshop/capture", [this, guard](const httplib::Request& req, httplib::Response& res) {
+        if (!guard(req, res)) { return; }
+        Enqueue(Command{CommandType::CaptureWorkshop, "", ""});
+        res.set_content("{\"ok\":true}", "application/json");
+    });
+
     post("/api/next", CommandType::Next);
     post("/api/prev", CommandType::Previous);
     post("/api/random", CommandType::Random);
@@ -251,6 +261,8 @@ void RemoteControl::DrainCommands()
         RebuildPresetCache();
     }
 
+    PollWorkshop();
+
     std::deque<Command> pending;
     {
         std::lock_guard<std::mutex> lock(_queueMutex);
@@ -265,6 +277,7 @@ void RemoteControl::DrainCommands()
         switch (command.type)
         {
             case CommandType::Next:
+                _workshopActive = false;
                 if (_favShuffle.load()) { JumpToFavorite(true); }
                 else
                 {
@@ -272,9 +285,11 @@ void RemoteControl::DrainCommands()
                 }
                 break;
             case CommandType::Previous:
+                _workshopActive = false;
                 center.postNotification(new PlaybackControlNotification(PlaybackControlNotification::Action::PreviousPreset));
                 break;
             case CommandType::Random:
+                _workshopActive = false;
                 if (_favShuffle.load()) { JumpToFavorite(false); }
                 else
                 {
@@ -305,6 +320,7 @@ void RemoteControl::DrainCommands()
                     uint32_t index = static_cast<uint32_t>(std::strtoul(command.arg.c_str(), nullptr, 10));
                     if (index < projectm_playlist_size(playlist))
                     {
+                        _workshopActive = false;
                         projectm_playlist_set_position(playlist, index, true);
                     }
                 }
@@ -312,6 +328,9 @@ void RemoteControl::DrainCommands()
             }
             case CommandType::SetSetting:
                 ApplySetting(command.arg, command.arg2);
+                break;
+            case CommandType::CaptureWorkshop:
+                CaptureToWorkshop();
                 break;
         }
     }
@@ -398,23 +417,112 @@ void RemoteControl::ApplySetting(const std::string& key, const std::string& valu
     }
 }
 
+void RemoteControl::PollWorkshop()
+{
+    long now = static_cast<long>(::time(nullptr));
+    if (now == _lastWorkshopPoll) { return; } // throttle to ~1 Hz
+    _lastWorkshopPoll = now;
+
+    DIR* dir = opendir(_workshopDir.c_str());
+    if (!dir) { return; }
+
+    std::string newest;
+    long newestMtime = 0;
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr)
+    {
+        std::string nm = entry->d_name;
+        if (nm.size() < 5 || nm.compare(nm.size() - 5, 5, ".milk") != 0) { continue; }
+        std::string full = _workshopDir + "/" + nm;
+        struct stat st{};
+        if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) { continue; }
+        long mtime = static_cast<long>(st.st_mtime);
+
+        auto it = _workshopSeen.find(full);
+        bool changed = (it == _workshopSeen.end() || it->second != mtime);
+        _workshopSeen[full] = mtime;
+        if (changed && mtime >= newestMtime)
+        {
+            newestMtime = mtime;
+            newest = full;
+        }
+    }
+    closedir(dir);
+
+    if (!_workshopSeeded)
+    {
+        _workshopSeeded = true; // first pass just records state; don't hijack the current preset
+        return;
+    }
+
+    if (!newest.empty())
+    {
+        ProjectMSDLApplication::instance().getSubsystem<ProjectMWrapper>().LoadPresetFile(newest);
+        _workshopActive = true;
+        _workshopPath = newest;
+        poco_information_f1(_logger, "Workshop: live-loaded %s", newest);
+    }
+}
+
+void RemoteControl::CaptureToWorkshop()
+{
+    if (_currentPath.empty()) { return; }
+
+    ::mkdir(_workshopDir.c_str(), 0755); // no-op if it exists
+
+    std::string base = _currentPath.substr(_currentPath.find_last_of('/') + 1);
+    std::string stem = base;
+    std::string ext;
+    auto dot = base.rfind(".milk");
+    if (dot != std::string::npos) { stem = base.substr(0, dot); ext = ".milk"; }
+
+    std::string dest = _workshopDir + "/" + stem + ext;
+    struct stat st{};
+    int n = 1;
+    while (stat(dest.c_str(), &st) == 0)
+    {
+        dest = _workshopDir + "/" + stem + " (" + std::to_string(n++) + ")" + ext;
+    }
+
+    std::ifstream in(_currentPath, std::ios::binary);
+    std::ofstream out(dest, std::ios::binary);
+    if (!in || !out)
+    {
+        poco_error_f1(_logger, "Workshop capture failed for %s", _currentPath);
+        return;
+    }
+    out << in.rdbuf();
+    out.close();
+
+    // Load the copy live and register it so the watcher doesn't reload it.
+    struct stat dst{};
+    if (stat(dest.c_str(), &dst) == 0) { _workshopSeen[dest] = static_cast<long>(dst.st_mtime); }
+    ProjectMSDLApplication::instance().getSubsystem<ProjectMWrapper>().LoadPresetFile(dest);
+    _workshopActive = true;
+    _workshopPath = dest;
+    poco_information_f1(_logger, "Workshop: captured current preset to %s", dest);
+}
+
 void RemoteControl::PublishStatus(const ProjectMWrapper::PlaybackStatus& status, const std::string& audioDevice)
 {
+    _currentPath = status.presetName;
+    std::string reportedPreset = _workshopActive ? _workshopPath : status.presetName;
     bool favorited;
     {
         std::lock_guard<std::mutex> lock(_favMutex);
-        favorited = _favorites.count(status.presetName) > 0;
+        favorited = _favorites.count(reportedPreset) > 0;
     }
 
     std::ostringstream json;
     json << "{"
-         << "\"preset\":\"" << JsonEscape(status.presetName) << "\","
+         << "\"preset\":\"" << JsonEscape(reportedPreset) << "\","
          << "\"position\":" << status.position << ","
          << "\"size\":" << status.playlistSize << ","
          << "\"shuffle\":" << (status.shuffle ? "true" : "false") << ","
          << "\"locked\":" << (status.locked ? "true" : "false") << ","
          << "\"favorited\":" << (favorited ? "true" : "false") << ","
          << "\"favoritesShuffle\":" << (_favShuffle.load() ? "true" : "false") << ","
+         << "\"workshop\":" << (_workshopActive ? "true" : "false") << ","
          << "\"audio\":\"" << JsonEscape(audioDevice) << "\""
          << "}";
 

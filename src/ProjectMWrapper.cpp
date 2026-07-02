@@ -284,6 +284,14 @@ std::vector<std::string> ProjectMWrapper::PlaylistItems() const
     return items;
 }
 
+void ProjectMWrapper::LoadPresetFile(const std::string& path) const
+{
+    if (_projectM)
+    {
+        projectm_load_preset_file(_projectM, path.c_str(), true);
+    }
+}
+
 void ProjectMWrapper::PresetSwitchedEvent(bool isHardCut, unsigned int index, void* context)
 {
     auto that = reinterpret_cast<ProjectMWrapper*>(context);

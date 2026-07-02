@@ -112,6 +112,12 @@ public:
      */
     std::vector<std::string> PlaylistItems() const;
 
+    /**
+     * @brief Loads a preset directly from a file (bypasses the playlist), with a smooth transition.
+     * @param path Absolute path to a .milk preset file.
+     */
+    void LoadPresetFile(const std::string& path) const;
+
 private:
     /**
      * @brief projectM callback. Called whenever a preset is switched.
